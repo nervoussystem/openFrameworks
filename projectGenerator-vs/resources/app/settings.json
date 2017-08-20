@@ -1,0 +1,9 @@
+{
+	"advancedMode": false,
+	"defaultOfPath": "C:\\dev\\openFrameworks",
+	"defaultPlatform": "vs",
+	"defaultRelativeProjectPath": "apps/myApps",
+	"showConsole": false,
+	"showDeveloperTools": false,
+	"useDictionaryNameGenerator": true
+}

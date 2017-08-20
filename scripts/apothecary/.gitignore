@@ -1,0 +1,11 @@
+/*
+!.gitignore
+!.travis.yml
+!README.md
+!/apothecary
+!/scripts
+!/apothecary/**/*
+!/scripts/**/*
+/apothecary/build
+.DS_Store
+!.*.yml
