@@ -772,7 +772,604 @@ void ofMesh::append(const ofMesh & mesh){
 
 
 //--------------------------------------------------------------
-void ofMesh::load(string path){
+void ofMesh::load(string path) {
+	string filetype = path.substr(path.size() - 3);
+	filetype = ofToLower(filetype);
+	if (filetype == "obj") {
+		loadOBJ(path);
+	}
+	else if (filetype == "stl") {
+		loadSTL(path);
+	}
+	else {
+		loadPLY(path);
+	}
+}
+
+//--------------------------------------------------------------
+void ofMesh::loadPLY(string path) {
+	ofFile is(path, ofFile::ReadOnly);
+	ofMesh& data = *this;
+
+	string error;
+	//ofBuffer buffer(is);
+	ofMesh backup = data;
+
+	int orderVertices = -1;
+	int orderIndices = -1;
+
+	ofIndexType vertexCoordsFound = 0;
+	ofIndexType colorCompsFound = 0;
+	ofIndexType texCoordsFound = 0;
+	ofIndexType normalsCoordsFound = 0;
+
+	ofIndexType currentVertex = 0;
+	ofIndexType currentFace = 0;
+
+	bool binary = false;
+	bool littleEndian = true;
+	bool floatColor = false;
+
+	enum State {
+		Header,
+		VertexDef,
+		FaceDef,
+		Vertices,
+		Normals,
+		Faces
+	};
+
+	data.clear();
+	State state = Header;
+
+	int lineNum = 0;
+	string line;
+	safeGetline(is, line);
+	lineNum++;
+	if (line != "ply") {
+		error = "wrong format, expecting 'ply'";
+		goto clean;
+	}
+	safeGetline(is, line);
+	lineNum++;
+	if (line == "format binary_little_endian 1.0") {
+		loadPLYBinary(is, true);
+		return;
+	}
+	else if (line == "format binary_big_endian 1.0") {
+		ofLogError("ofMesh") << "big endian binary files not supported" << endl;
+		//loadPLYBinary(is, false);
+		return;
+	}
+	else if (line != "format ascii 1.0") {
+		error = "wrong format, expecting 'format ascii 1.0'";
+		goto clean;
+	}
+
+
+	while (safeGetline(is, line)) {
+		lineNum++;
+		string lineStr = line;
+		if (lineStr.find("comment") == 0 || lineStr.empty()) {
+			continue;
+		}
+
+		if ((state == Header || state == FaceDef) && lineStr.find("element vertex") == 0) {
+			state = VertexDef;
+			orderVertices = MAX(orderIndices, 0) + 1;
+			data.getVertices().resize(ofToInt(lineStr.substr(15)));
+			continue;
+		}
+
+		if ((state == Header || state == VertexDef) && lineStr.find("element face") == 0) {
+			state = FaceDef;
+			orderIndices = MAX(orderVertices, 0) + 1;
+			data.getIndices().resize(ofToInt(lineStr.substr(13)) * 3);
+			continue;
+		}
+
+		if (state == VertexDef && (lineStr.find("property float x") == 0 || lineStr.find("property float y") == 0 || lineStr.find("property float z") == 0)) {
+			vertexCoordsFound++;
+			continue;
+		}
+
+		if (state == VertexDef && (lineStr.find("property float r") == 0 || lineStr.find("property float g") == 0 || lineStr.find("property float b") == 0 || lineStr.find("property float a") == 0)) {
+			colorCompsFound++;
+			data.getColors().resize(data.getVertices().size());
+			floatColor = true;
+			continue;
+		}
+
+		if (state == VertexDef && (lineStr.find("property uchar red") == 0 || lineStr.find("property uchar green") == 0 || lineStr.find("property uchar blue") == 0 || lineStr.find("property uchar alpha") == 0)) {
+			colorCompsFound++;
+			data.getColors().resize(data.getVertices().size());
+			floatColor = false;
+			continue;
+		}
+
+		if (state == VertexDef && (lineStr.find("property float u") == 0 || lineStr.find("property float v") == 0)) {
+			texCoordsFound++;
+			data.getTexCoords().resize(data.getVertices().size());
+			continue;
+		}
+
+		if (state == VertexDef && (lineStr.find("property float nx") == 0 || lineStr.find("property float ny") == 0 || lineStr.find("property float nz") == 0)) {
+			normalsCoordsFound++;
+			if (normalsCoordsFound == 3) data.getNormals().resize(data.getVertices().size());
+			continue;
+		}
+
+		if (state == FaceDef && lineStr.find("property list") != 0 && lineStr != "end_header") {
+			error = "wrong face definition";
+			goto clean;
+		}
+
+		if (lineStr == "end_header") {
+			if (data.hasColors() && colorCompsFound != 3 && colorCompsFound != 4) {
+				error = "data has color coordiantes but not correct number of components. Found " + ofToString(colorCompsFound) + " expecting 3 or 4";
+				goto clean;
+			}
+			if (data.hasNormals() && normalsCoordsFound != 3) {
+				error = "data has normal coordiantes but not correct number of components. Found " + ofToString(normalsCoordsFound) + " expecting 3";
+				goto clean;
+			}
+			if (!data.hasVertices()) {
+				ofLogWarning("ofMesh") << "load(): mesh loaded from \"" << path << "\" has no vertices";
+			}
+			if (orderVertices == -1) orderVertices = 9999;
+			if (orderIndices == -1) orderIndices = 9999;
+
+			if (orderVertices < orderIndices) {
+				state = Vertices;
+			}
+			else {
+				state = Faces;
+			}
+			continue;
+		}
+
+		if (state == Vertices) {
+			if (data.getNumVertices() <= currentVertex) {
+				error = "found more vertices: " + ofToString(currentVertex + 1) + " than specified in header: " + ofToString(data.getNumVertices());
+				goto clean;
+			}
+			stringstream sline(lineStr);
+			sline >> data.getVertices()[currentVertex].x;
+			sline >> data.getVertices()[currentVertex].y;
+			if (vertexCoordsFound>2) sline >> data.getVertices()[currentVertex].z;
+
+			if (colorCompsFound>0) {
+				if (floatColor) {
+					sline >> data.getColors()[currentVertex].r;
+					sline >> data.getColors()[currentVertex].g;
+					sline >> data.getColors()[currentVertex].b;
+					if (colorCompsFound>3) sline >> data.getColors()[currentVertex].a;
+				}
+				else {
+					ofColor c;
+					sline >> c.r;
+					sline >> c.g;
+					sline >> c.b;
+					if (colorCompsFound>3) sline >> c.a;
+					data.getColors()[currentVertex] = c;
+				}
+			}
+
+			if (texCoordsFound>0) {
+				ofVec2f uv;
+				sline >> uv.x;
+				sline >> uv.y;
+				data.getTexCoords()[currentVertex] = uv;
+			}
+
+			if (normalsCoordsFound>0) {
+				ofVec3f n;
+				sline >> n.x;
+				sline >> n.y;
+				sline >> n.z;
+				data.getNormals()[currentVertex] = n;
+			}
+
+			currentVertex++;
+			if (currentVertex == data.getNumVertices()) {
+				if (orderVertices<orderIndices) {
+					state = Faces;
+				}
+				else {
+					state = Vertices;
+				}
+			}
+			continue;
+		}
+
+		if (state == Faces) {
+			if (data.getNumIndices() / 3<currentFace) {
+				error = "found more faces than specified in header";
+				goto clean;
+			}
+			stringstream sline(lineStr);
+			int numV;
+			sline >> numV;
+			if (numV != 3) {
+				error = "face not a triangle";
+				goto clean;
+			}
+			int i;
+			sline >> i;
+			data.getIndices()[currentFace * 3] = i;
+			sline >> i;
+			data.getIndices()[currentFace * 3 + 1] = i;
+			sline >> i;
+			data.getIndices()[currentFace * 3 + 2] = i;
+
+			currentFace++;
+			if (currentFace == data.getNumIndices() / 3) {
+				if (orderVertices<orderIndices) {
+					state = Vertices;
+				}
+				else {
+					state = Faces;
+				}
+			}
+			continue;
+		}
+	}
+
+
+	return;
+clean:
+	ofLogError("ofMesh") << "load(): " << lineNum << ":" << error;
+	ofLogError("ofMesh") << "load(): \"" << line << "\"";
+	data = backup;
+}
+
+//DOES NOT ACCOUNT FOR ENDIANESS
+static unsigned int bytesToInt(char b0, char b1, char b2, char b3) {
+	char byte_array[] = { b0, b1, b2, b3 };
+	unsigned int result;
+	std::copy(reinterpret_cast<const char*>(&byte_array[0]),
+		reinterpret_cast<const char*>(&byte_array[4]),
+		reinterpret_cast<char*>(&result));
+	return result;
+}
+
+static float bytesToFloat(char b0, char b1, char b2, char b3) {
+	char byte_array[] = { b0, b1, b2, b3 };
+	float result;
+	std::copy(reinterpret_cast<const char*>(&byte_array[0]),
+		reinterpret_cast<const char*>(&byte_array[4]),
+		reinterpret_cast<char*>(&result));
+	return result;
+}
+
+/*
+Read binary values from an ofFile for loading binary PLY files
+does not account for endianness
+assumes short = 2 bytes, int = 4 bytes, float = 4 bytes, double = 8 bytes
+*/
+template<typename T>
+void ofMesh::readPLYProperty(ofFile & is, PropertyType type, T & out) {
+	if (type == UCHAR) {
+		unsigned char v;
+		is.read(reinterpret_cast<char*>(&v), sizeof(unsigned char));
+		out = v;
+	}
+	else if (type == CHAR) {
+		char v;
+		is.read(&v, sizeof(char));
+		out = v;
+	}
+	else if (type == USHORT) {
+		unsigned short v;
+		is.read(reinterpret_cast<char*>(&v), sizeof(unsigned short));
+		out = v;
+	}
+	else if (type == SHORT) {
+		short v;
+		is.read(reinterpret_cast<char*>(&v), sizeof(short));
+		out = v;
+	}
+	else if (type == UINT) {
+		unsigned int v;
+		is.read(reinterpret_cast<char*>(&v), sizeof(unsigned int));
+		out = v;
+	}
+	else if (type == INT) {
+		int v;
+		is.read(reinterpret_cast<char*>(&v), sizeof(int));
+		out = v;
+	}
+	else if (type == FLOAT) {
+		float v;
+		is.read(reinterpret_cast<char*>(&v), sizeof(float));
+		out = v;
+	}
+	else if (type == DOUBLE) {
+		double v;
+		is.read(reinterpret_cast<char*>(&v), sizeof(double));
+		out = v;
+	}
+	else {
+		ofLogError("ofMesh") << "Unsupported property type";
+	}
+}
+
+template<typename T>
+void ofMesh::readPLYListProperty(ofFile & is, PropertyType type, T & out) {
+	unsigned int listLen;
+	readPLYProperty(is, UCHAR, listLen);
+	for (int i = 0; i < listLen; ++i) {
+		readPLYProperty(is, type, out[i]);
+	}
+}
+
+void ofMesh::loadPLYBinary(ofFile & is, bool littleEndian) {
+	ofMesh& data = *this;
+
+	string error;
+	ofMesh backup = data;
+
+	int orderVertices = -1;
+	int orderIndices = -1;
+
+	vector<tuple<string, PropertyType, bool> > faceProperties;
+	vector<tuple<string, PropertyType, bool> > vertexProperties;
+
+	ofIndexType vertexCoordsFound = 0;
+	ofIndexType colorCompsFound = 0;
+	ofIndexType texCoordsFound = 0;
+	ofIndexType normalsCoordsFound = 0;
+
+	ofIndexType currentVertex = 0;
+	ofIndexType currentFace = 0;
+
+	bool floatColor = false;
+
+	enum State {
+		Header,
+		VertexDef,
+		FaceDef,
+		Vertices,
+		Normals,
+		Faces
+	};
+
+	data.clear();
+	State state = Header;
+
+	unsigned int lineNum = 0;
+	ofIndexType numVertices = 0;
+	ofIndexType numFaces = 0;
+
+	string lineStr;
+
+	//skip first two lines, already confirmed binary ply type
+	lineNum += 2;
+
+	//het header
+	while (safeGetline(is, lineStr)) {
+		lineNum++;
+		if (lineStr.find("comment") == 0 || lineStr.empty()) {
+			continue;
+		}
+
+		if ((state == Header || state == FaceDef) && lineStr.find("element vertex") == 0) {
+			state = VertexDef;
+			orderVertices = MAX(orderIndices, 0) + 1;
+			numVertices = ofToInt(lineStr.substr(15));
+			data.getVertices().resize(numVertices);
+		}
+		else if ((state == Header || state == VertexDef) && lineStr.find("element face") == 0) {
+			state = FaceDef;
+			orderIndices = MAX(orderVertices, 0) + 1;
+			numFaces = ofToInt(lineStr.substr(13));
+			data.getIndices().reserve(numFaces * 3);
+		}
+		else if (state == VertexDef && (lineStr.find("property float x") == 0 || lineStr.find("property float y") == 0 || lineStr.find("property float z") == 0)) {
+			vertexCoordsFound++;
+		}
+		else if (state == VertexDef && (lineStr.find("property float r") == 0 || lineStr.find("property float g") == 0 || lineStr.find("property float b") == 0 || lineStr.find("property float a") == 0)) {
+			colorCompsFound++;
+			data.getColors().resize(numVertices);
+			floatColor = true;
+		}
+		else if (state == VertexDef && (lineStr.find("property uchar red") == 0 || lineStr.find("property uchar green") == 0 || lineStr.find("property uchar blue") == 0 || lineStr.find("property uchar alpha") == 0)) {
+			colorCompsFound++;
+			data.getColors().resize(numVertices);
+			floatColor = false;
+		}
+		else if (state == VertexDef && (lineStr.find("property float u") == 0 || lineStr.find("property float v") == 0)) {
+			texCoordsFound++;
+			data.getTexCoords().resize(numVertices);
+		}
+		else if (state == VertexDef && (lineStr.find("property float nx") == 0 || lineStr.find("property float ny") == 0 || lineStr.find("property float nz") == 0)) {
+			normalsCoordsFound++;
+			if (normalsCoordsFound == 3) data.getNormals().resize(numVertices);
+		}
+		else if (lineStr == "end_header") {
+			if (data.hasColors() && colorCompsFound != 3 && colorCompsFound != 4) {
+				ofLogError("ofMesh") << "data has color coordiantes but not correct number of components. Found " + ofToString(colorCompsFound) + " expecting 3 or 4";
+				return;
+			}
+			if (data.hasNormals() && normalsCoordsFound != 3) {
+				ofLogError("ofMesh") << "data has normal coordiantes but not correct number of components. Found " + ofToString(normalsCoordsFound) + " expecting 3";
+				return;
+			}
+			if (!data.hasVertices()) {
+				ofLogWarning("ofMesh") << "load(): mesh has no vertices";
+			}
+			if (orderVertices == -1) orderVertices = 9999;
+			if (orderIndices == -1) orderIndices = 9999;
+
+			if (orderVertices < orderIndices) {
+				state = Vertices;
+			}
+			else {
+				state = Faces;
+			}
+			break;
+		}
+
+		stringstream sline(lineStr);
+		string propertyStr, propertyName, token;
+		sline >> propertyStr;
+		sline >> propertyStr;
+
+		bool isList = false;
+		if (propertyStr == "list") {
+			sline >> token;
+			if (!(token == "uchar" || token == "uint8")) {
+				ofLogError("ofMesh") << "load(): line " << lineNum << ": only uchar supported for list property count - " << lineStr;
+				return;
+			}
+			sline >> propertyStr;
+			sline >> propertyName;
+			isList = true;
+		}
+		else {
+			sline >> propertyName;
+		}
+		if (propertyStr == "uchar" || propertyStr == "uint8") {
+			if (state == FaceDef) faceProperties.push_back(make_tuple(propertyName, UCHAR, isList));
+			else if (state == VertexDef) vertexProperties.push_back(make_tuple(propertyName, UCHAR, isList));
+		}
+		else if (propertyStr == "char" || propertyStr == "int8") {
+			if (state == FaceDef) faceProperties.push_back(make_tuple(propertyName, CHAR, isList));
+			else if (state == VertexDef) vertexProperties.push_back(make_tuple(propertyName, CHAR, isList));
+		}
+		else if (propertyStr == "ushort" || propertyStr == "uint16") {
+			if (state == FaceDef) faceProperties.push_back(make_tuple(propertyName, USHORT, isList));
+			else if (state == VertexDef) vertexProperties.push_back(make_tuple(propertyName, USHORT, isList));
+		}
+		else if (propertyStr == "short" || propertyStr == "int16") {
+			if (state == FaceDef) faceProperties.push_back(make_tuple(propertyName, SHORT, isList));
+			else if (state == VertexDef) vertexProperties.push_back(make_tuple(propertyName, SHORT, isList));
+		}
+		else if (propertyStr == "uint" || propertyStr == "uint32") {
+			if (state == FaceDef) faceProperties.push_back(make_tuple(propertyName, UINT, isList));
+			else if (state == VertexDef) vertexProperties.push_back(make_tuple(propertyName, UINT, isList));
+		}
+		else if (propertyStr == "int" || propertyStr == "int32") {
+			if (state == FaceDef) faceProperties.push_back(make_tuple(propertyName, INT, isList));
+			else if (state == VertexDef) vertexProperties.push_back(make_tuple(propertyName, INT, isList));
+		}
+		else if (propertyStr == "float" || propertyStr == "float32") {
+			if (state == FaceDef) faceProperties.push_back(make_tuple(propertyName, FLOAT, isList));
+			else if (state == VertexDef) vertexProperties.push_back(make_tuple(propertyName, FLOAT, isList));
+		}
+		else if (propertyStr == "double" || propertyStr == "float64") {
+			if (state == FaceDef) faceProperties.push_back(make_tuple(propertyName, DOUBLE, isList));
+			else if (state == VertexDef) vertexProperties.push_back(make_tuple(propertyName, DOUBLE, isList));
+		}
+	}
+
+	ofVec3f vertex, normal;
+	ofVec2f texCoord;
+	ofFloatColor c;
+
+	//this is a hack
+	float floatProp, dummy[10];
+	ofIndexType indices[6];
+	int numFaceIndices;
+	string propName;
+	PropertyType propType;
+	bool isList;
+	while (currentFace < numFaces || currentVertex < numVertices) {
+		if (state == Vertices) {
+			//read properties
+			//check to make sure none of these are lists
+			for (auto & prop : vertexProperties) {
+				tie(propName, propType, isList) = prop;
+				if (propName == "x") {
+					readPLYProperty(is, propType, vertex.x);
+				}
+				else if (propName == "y") {
+					readPLYProperty(is, propType, vertex.y);
+				}
+				else if (propName == "z") {
+					readPLYProperty(is, propType, vertex.z);
+				}
+				else if (propName == "nx") {
+					readPLYProperty(is, propType, normal.x);
+				}
+				else if (propName == "ny") {
+					readPLYProperty(is, propType, normal.y);
+				}
+				else if (propName == "nz") {
+					readPLYProperty(is, propType, normal.z);
+				}
+				else if (propName == "u") {
+					readPLYProperty(is, propType, texCoord.x);
+				}
+				else if (propName == "v") {
+					readPLYProperty(is, propType, texCoord.y);
+				}
+				else if (propName == "r" || propName == "red") {
+					readPLYProperty(is, propType, c.r);
+					if (propType != FLOAT) c.r /= 255;
+				}
+				else if (propName == "g" || propName == "green") {
+					readPLYProperty(is, propType, c.g);
+					if (propType != FLOAT) c.g /= 255;
+				}
+				else if (propName == "b" || propName == "blue") {
+					readPLYProperty(is, propType, c.b);
+					if (propType != FLOAT) c.b /= 255;
+				}
+				else if (propName == "a" || propName == "alpha") {
+					readPLYProperty(is, propType, c.a);
+					if (propType != FLOAT) c.a /= 255;
+				}
+				else if (isList) {
+					readPLYListProperty(is, propType, dummy);
+				}
+				else {
+					readPLYProperty(is, propType, floatProp);
+				}
+			}
+			data.setVertex(currentVertex, vertex);
+			if (normalsCoordsFound > 0) data.setNormal(currentVertex, normal);
+			if (colorCompsFound > 0) data.setColor(currentVertex, c);
+			if (texCoordsFound > 0) data.setTexCoord(currentVertex, texCoord);
+
+			currentVertex++;
+			if (currentVertex == numVertices) state = Faces;
+		}
+		else if (state == Faces) {
+			for (auto & prop : faceProperties) {
+				tie(propName, propType, isList) = prop;
+				//assume vertex indices are a list of int
+				if ((propName == "vertex_index" || propName == "vertex_indices")) {
+					readPLYProperty(is, UCHAR, numFaceIndices);
+					if (numFaceIndices != 3) {
+						ofLogError("ofMesh") << "load(): only 3 sided faces supported";
+						return;
+					}
+					for (int i = 0; i < numFaceIndices; ++i) {
+						readPLYProperty(is, propType, indices[i]);
+					}
+				}
+				else if (isList) {
+					readPLYListProperty(is, propType, dummy);
+				}
+				else {
+					readPLYProperty(is, propType, floatProp);
+				}
+				data.addIndices(indices, numFaceIndices);
+				currentFace++;
+			}
+			if (currentFace == numFaces) state = Vertices;
+		}
+	}
+}
+
+//--------------------------------------------------------------
+/*
+load STL file
+does not support ascii files
+does not support color
+*/
+void ofMesh::loadSTL(string path) {
 	ofFile is(path, ofFile::ReadOnly);
 	ofMesh& data = *this;
 
@@ -781,20 +1378,86 @@ void ofMesh::load(string path){
 	ofBuffer buffer(is);
 	ofMesh backup = data;
 
-	int orderVertices=-1;
-	int orderIndices=-1;
+	bool floatColor = false;
 
-	ofIndexType vertexCoordsFound=0;
-	ofIndexType colorCompsFound=0;
-	ofIndexType texCoordsFound=0;
-	ofIndexType normalsCoordsFound=0;
+
+	data.clear();
+
+	char * stlData = buffer.getData();
+
+	string line = buffer.getFirstLine();
+	int index = 0;
+
+
+	if (line.substr(0, 5) == "solid") {
+		error = "wrong format, expecting 'binary'";
+		goto clean;
+	}
+
+	//skip header
+	stlData = stlData + 80;
+
+	unsigned int numTri = bytesToInt(*(stlData), *(stlData + 1), *(stlData + 2), *(stlData + 3));
+	stlData += 4;
+	ofLogError("ofMesh") << "number of triangles " << numTri;
+	try {
+		for (int i = 0; i < numTri; ++i) {
+			//skip normal
+			stlData += 12;
+			ofVec3f v(bytesToFloat(*(stlData), *(stlData + 1), *(stlData + 2), *(stlData + 3)), bytesToFloat(*(stlData + 4), *(stlData + 5), *(stlData + 6), *(stlData + 7)), bytesToFloat(*(stlData + 8), *(stlData + 9), *(stlData + 10), *(stlData + 11)));
+			stlData += 12;
+			data.addVertex(v);
+			v.set(bytesToFloat(*(stlData), *(stlData + 1), *(stlData + 2), *(stlData + 3)), bytesToFloat(*(stlData + 4), *(stlData + 5), *(stlData + 6), *(stlData + 7)), bytesToFloat(*(stlData + 8), *(stlData + 9), *(stlData + 10), *(stlData + 11)));
+			stlData += 12;
+			data.addVertex(v);
+			v.set(bytesToFloat(*(stlData), *(stlData + 1), *(stlData + 2), *(stlData + 3)), bytesToFloat(*(stlData + 4), *(stlData + 5), *(stlData + 6), *(stlData + 7)), bytesToFloat(*(stlData + 8), *(stlData + 9), *(stlData + 10), *(stlData + 11)));
+			stlData += 12;
+			data.addVertex(v);
+
+			//skip attribute
+			stlData += 2;
+
+			data.addIndex(index++);
+			data.addIndex(index++);
+			data.addIndex(index++);
+		}
+	}
+	catch (exception e) {
+		error = "wrong number of triangles";
+		goto clean;
+	}
+
+
+	return;
+clean:
+	ofLogError("ofMesh") << "load(): " << error;
+	data = backup;
+}
+
+//--------------------------------------------------------------
+void ofMesh::loadOBJ(string path) {
+	ofFile is(path, ofFile::ReadOnly);
+	ofMesh& data = *this;
+
+
+	string error;
+	ofBuffer buffer(is);
+	ofMesh backup = data;
+
+	int orderVertices = -1;
+	int orderIndices = -1;
+
+	ofIndexType vertexCoordsFound = 0;
+	ofIndexType colorCompsFound = 0;
+	ofIndexType texCoordsFound = 0;
+	ofIndexType normalsCoordsFound = 0;
 
 	ofIndexType currentVertex = 0;
 	ofIndexType currentFace = 0;
-	
+
 	bool floatColor = false;
 
-	enum State{
+	enum State {
 		Header,
 		VertexDef,
 		FaceDef,
@@ -809,218 +1472,114 @@ void ofMesh::load(string path){
 	int lineNum = 0;
 	ofBuffer::Lines lines = buffer.getLines();
 	ofBuffer::Line line = lines.begin();
-	lineNum++;
-	if(*line!="ply"){
-		error = "wrong format, expecting 'ply'";
-		goto clean;
-	}
 
-	line++;
-	lineNum++;
-	if(*line!="format ascii 1.0"){
-		error = "wrong format, expecting 'format ascii 1.0'";
-		goto clean;
-	}
-
-	for(;line != lines.end(); ++line){
+	ofFloatColor col;
+	col.a = 1.0;
+	//currently ignoring object tags
+	//ignoring colors and textures for now
+	ofVec3f v;
+	string token;
+	for (; line != lines.end(); ++line) {
 		lineNum++;
 		string lineStr = *line;
-		if(lineStr.find("comment")==0 || lineStr.empty()){
+		if (lineStr.empty() || lineStr.at(0) == '#') {
 			continue;
 		}
-
-		if((state==Header || state==FaceDef) && lineStr.find("element vertex")==0){
-			state = VertexDef;
-			orderVertices = MAX(orderIndices, 0)+1;
-			data.getVertices().resize(ofToInt(lineStr.substr(15)));
-			continue;
-		}
-
-		if((state==Header || state==VertexDef) && lineStr.find("element face")==0){
-			state = FaceDef;
-			orderIndices = MAX(orderVertices, 0)+1;
-			data.getIndices().resize(ofToInt(lineStr.substr(13))*3);
-			continue;
-		}
-
-		if(state==VertexDef && (lineStr.find("property float x")==0 || lineStr.find("property float y")==0 || lineStr.find("property float z")==0)){
-			vertexCoordsFound++;
-			continue;
-		}
-
-		if(state==VertexDef && (lineStr.find("property float r")==0 || lineStr.find("property float g")==0 || lineStr.find("property float b")==0 || lineStr.find("property float a")==0)){
-			colorCompsFound++;
-			data.getColors().resize(data.getVertices().size());
-			floatColor = true;
-			continue;
-		}
-
-		if(state==VertexDef && (lineStr.find("property uchar red")==0 || lineStr.find("property uchar green")==0 || lineStr.find("property uchar blue")==0 || lineStr.find("property uchar alpha")==0)){
-			colorCompsFound++;
-			data.getColors().resize(data.getVertices().size());
-			floatColor = false;
-			continue;
-		}
-
-		if(state==VertexDef && (lineStr.find("property float u")==0 || lineStr.find("property float v")==0)){
-			texCoordsFound++;
-			data.getTexCoords().resize(data.getVertices().size());
-			continue;
-		}
-
-		if(state==VertexDef && (lineStr.find("property float nx")==0 || lineStr.find("property float ny")==0 || lineStr.find("property float nz")==0)){
-			normalsCoordsFound++;
-			if (normalsCoordsFound==3) data.getNormals().resize(data.getVertices().size());
-			continue;
-		}
-
-		if(state==FaceDef && lineStr.find("property list")!=0 && lineStr!="end_header"){
-			error = "wrong face definition";
-			goto clean;
-		}
-
-		if(lineStr=="end_header"){
-			if(data.hasColors() && colorCompsFound!=3 && colorCompsFound!=4){
-				error =  "data has color coordiantes but not correct number of components. Found " + ofToString(colorCompsFound) + " expecting 3 or 4";
-				goto clean;
-			}
-			if(data.hasNormals() && normalsCoordsFound!=3){
-				error = "data has normal coordiantes but not correct number of components. Found " + ofToString(normalsCoordsFound) + " expecting 3";
-				goto clean;
-			}
-			if(!data.hasVertices()){
-				ofLogWarning("ofMesh") << "load(): mesh loaded from \"" << path << "\" has no vertices";
-			}
-			if(orderVertices==-1) orderVertices=9999;
-			if(orderIndices==-1) orderIndices=9999;
-
-			if(orderVertices < orderIndices){
-				state = Vertices;
-			}else {
-				state = Faces;
-			}
-			continue;
-		}
-
-		if(state==Vertices){
-			if(data.getNumVertices()<=currentVertex){
-				error = "found more vertices: " + ofToString(currentVertex+1) + " than specified in header: " + ofToString(data.getNumVertices());
-				goto clean;
-			}
-			stringstream sline(lineStr);
-			sline >> data.getVertices()[currentVertex].x;
-			sline >> data.getVertices()[currentVertex].y;
-			if(vertexCoordsFound>2) sline >> data.getVertices()[currentVertex].z;
-
-			if(colorCompsFound>0){
-				if (floatColor){
-					sline >> data.getColors()[currentVertex].r;
-					sline >> data.getColors()[currentVertex].g;
-					sline >> data.getColors()[currentVertex].b;
-					if(colorCompsFound>3) sline >> data.getColors()[currentVertex].a;
-				}else{
-					ofColor c;
-					sline >> c.r;
-					sline >> c.g;
-					sline >> c.b;
-					if(colorCompsFound>3) sline >> c.a;
-					data.getColors()[currentVertex] = c;
+		stringstream sline(lineStr);
+		sline >> token;
+		if (token == "v") {
+			sline >> v.x;
+			sline >> v.y;
+			sline >> v.z;
+			data.addVertex(v);
+			if (!sline.eof()) {
+				sline >> col.r;
+				sline >> col.g;
+				sline >> col.b;
+				if (!sline.eof()) {
+					sline >> col.a;
 				}
+				data.addColor(col);
 			}
-
-			if(texCoordsFound>0){
-				ofVec2f uv;
-				sline >> uv.x;
-				sline >> uv.y;
-				data.getTexCoords()[currentVertex] = uv;
-			}
-			
-			if (normalsCoordsFound>0){
-				ofVec3f n;
-				sline >> n.x;
-				sline >> n.y;
-				sline >> n.z;
-				data.getNormals()[currentVertex] = n;
-			}
-			
-			currentVertex++;
-			if(currentVertex==data.getNumVertices()){
-				if(orderVertices<orderIndices){
-					state = Faces;
-				}else{
-					state = Vertices;
-				}
-			}
-			continue;
 		}
-
-		if(state==Faces){
-			if(data.getNumIndices()/3<currentFace){
-				error = "found more faces than specified in header";
-				goto clean;
-			}
-			stringstream sline(lineStr);
-			int numV;
-			sline >> numV;
-			if(numV!=3){
-				error = "face not a triangle";
-				goto clean;
-			}
-			int i;
-			sline >> i;
-			data.getIndices()[currentFace*3] = i;
-			sline >> i;
-			data.getIndices()[currentFace*3+1] = i;
-			sline >> i;
-			data.getIndices()[currentFace*3+2] = i;
-
-			currentFace++;
-			if(currentFace==data.getNumIndices()/3){
-				if(orderVertices<orderIndices){
-					state = Vertices;
-				}else{
-					state = Faces;
+		else if (token == "f") {
+			//faces with more than 3 vertices not supported
+			unsigned int index;
+			unsigned int numVert = 0;
+			while (!sline.eof()) {
+				if (numVert == 3) {
+					ofLogError("ofMesh") << "load(): " << lineNum << ": more than 3 vertices in a face not supported";
+					return;
 				}
+				sline >> token;
+				index = stoi(token);
+				data.addIndex(index - 1);
+				numVert++;
 			}
-			continue;
+			//while (getline(sline, token, ' ')) {
+
+			//}
+		}
+		else if (token == "vn") {
+			data.enableNormals();
+			sline >> v.x;
+			sline >> v.y;
+			sline >> v.z;
+			data.addNormal(v);
+		}
+		else if (token == "vt") {
+			data.enableNormals();
+			sline >> v.x;
+			sline >> v.y;
+			data.addTexCoord(v);
 		}
 	}
-
-
 	return;
-	clean:
-	ofLogError("ofMesh") << "load(): " << lineNum << ":" << error;
-	ofLogError("ofMesh") << "load(): \"" << *line << "\"";
-	data = backup;
 }
 
-void ofMesh::save(string path, bool useBinary) const{
+
+void ofMesh::save(string path, bool useBinary) const {
+	string filetype = path.substr(path.size() - 4);
+	filetype = ofToLower(filetype);
+	if (filetype == ".stl") {
+		saveSTL(path);
+	}
+	else if (filetype == ".obj") {
+		saveOBJ(path);
+	}
+	else {
+		savePLY(path, useBinary);
+	}
+}
+
+void ofMesh::savePLY(string path, bool useBinary) const {
 	ofFile os(path, ofFile::WriteOnly);
 	const ofMesh& data = *this;
 
 	os << "ply" << endl;
-	if(useBinary) {
+	if (useBinary) {
 		os << "format binary_little_endian 1.0" << endl;
-	} else {
+	}
+	else {
 		os << "format ascii 1.0" << endl;
 	}
 
-	if(data.getNumVertices()){
+	if (data.getNumVertices()) {
 		os << "element vertex " << data.getNumVertices() << endl;
 		os << "property float x" << endl;
 		os << "property float y" << endl;
 		os << "property float z" << endl;
-		if(data.getNumColors()){
+		if (data.getNumColors()) {
 			os << "property uchar red" << endl;
 			os << "property uchar green" << endl;
 			os << "property uchar blue" << endl;
 			os << "property uchar alpha" << endl;
 		}
-		if(data.getNumTexCoords()){
+		if (data.getNumTexCoords()) {
 			os << "property float u" << endl;
 			os << "property float v" << endl;
 		}
-		if(data.getNumNormals()){
+		if (data.getNumNormals()) {
 			os << "property float nx" << endl;
 			os << "property float ny" << endl;
 			os << "property float nz" << endl;
@@ -1028,73 +1587,170 @@ void ofMesh::save(string path, bool useBinary) const{
 	}
 
 	std::size_t faceSize = 3;
-	if(data.getNumIndices()){
+	if (data.getNumIndices()) {
 		os << "element face " << data.getNumIndices() / faceSize << endl;
 		os << "property list uchar int vertex_indices" << endl;
-	} else if(data.getMode() == OF_PRIMITIVE_TRIANGLES) {
+	}
+	else if (data.getMode() == OF_PRIMITIVE_TRIANGLES) {
 		os << "element face " << data.getNumVertices() / faceSize << endl;
 		os << "property list uchar int vertex_indices" << endl;
 	}
 
 	os << "end_header" << endl;
 
-	for(std::size_t i = 0; i < data.getNumVertices(); i++){
-		if(useBinary) {
-			os.write((char*) &data.getVertices()[i], sizeof(ofVec3f));
-		} else {
+	for (std::size_t i = 0; i < data.getNumVertices(); i++) {
+		if (useBinary) {
+			os.write((char*)&data.getVertices()[i], sizeof(ofVec3f));
+		}
+		else {
 			os << data.getVertex(i).x << " " << data.getVertex(i).y << " " << data.getVertex(i).z;
 		}
-		if(data.getNumColors()){
+		if (data.getNumColors()) {
 			// VCG lib / MeshLab don't support float colors, so we have to cast
 			ofColor cur = data.getColors()[i];
-			if(useBinary) {
-				os.write((char*) &cur, sizeof(ofColor));
-			} else {
-				os << " " << (int) cur.r << " " << (int) cur.g << " " << (int) cur.b << " " << (int) cur.a;
+			if (useBinary) {
+				os.write((char*)&cur, sizeof(ofColor));
+			}
+			else {
+				os << " " << (int)cur.r << " " << (int)cur.g << " " << (int)cur.b << " " << (int)cur.a;
 			}
 		}
-		if(data.getNumTexCoords()){
-			if(useBinary) {
-				os.write((char*) &data.getTexCoords()[i], sizeof(ofVec2f));
-			} else {
+		if (data.getNumTexCoords()) {
+			if (useBinary) {
+				os.write((char*)&data.getTexCoords()[i], sizeof(ofVec2f));
+			}
+			else {
 				os << " " << data.getTexCoord(i).x << " " << data.getTexCoord(i).y;
 			}
 		}
-		if(data.getNumNormals()){
-			if(useBinary) {
-				os.write((char*) &data.getNormals()[i], sizeof(ofVec3f));
-			} else {
+		if (data.getNumNormals()) {
+			if (useBinary) {
+				os.write((char*)&data.getNormals()[i], sizeof(ofVec3f));
+			}
+			else {
 				os << " " << data.getNormal(i).x << " " << data.getNormal(i).y << " " << data.getNormal(i).z;
 			}
 		}
-		if(!useBinary) {
+		if (!useBinary) {
 			os << endl;
 		}
 	}
 
-	if(data.getNumIndices()) {
-		for(std::size_t i = 0; i < data.getNumIndices(); i += faceSize) {
-			if(useBinary) {
-				os.write((char*) &faceSize, sizeof(unsigned char));
-				for(std::size_t j = 0; j < faceSize; j++) {
+	if (data.getNumIndices()) {
+		for (std::size_t i = 0; i < data.getNumIndices(); i += faceSize) {
+			if (useBinary) {
+				os.write((char*)&faceSize, sizeof(unsigned char));
+				for (std::size_t j = 0; j < faceSize; j++) {
 					std::size_t curIndex = data.getIndex(i + j);
-					os.write((char*) &curIndex, sizeof(std::size_t));
+					os.write((char*)&curIndex, sizeof(std::size_t));
 				}
-			} else {
-				os << (std::size_t) faceSize << " " << data.getIndex(i) << " " << data.getIndex(i+1) << " " << data.getIndex(i+2) << endl;
+			}
+			else {
+				os << (std::size_t) faceSize << " " << data.getIndex(i) << " " << data.getIndex(i + 1) << " " << data.getIndex(i + 2) << endl;
 			}
 		}
-	} else if(data.getMode() == OF_PRIMITIVE_TRIANGLES) {
-		for(std::size_t i = 0; i < data.getNumVertices(); i += faceSize) {
-			std::size_t indices[] = {i, i + 1, i + 2};
-			if(useBinary) {
-				os.write((char*) &faceSize, sizeof(unsigned char));
-				for(std::size_t j = 0; j < faceSize; j++) {
-					os.write((char*) &indices[j], sizeof(std::size_t));
+	}
+	else if (data.getMode() == OF_PRIMITIVE_TRIANGLES) {
+		for (std::size_t i = 0; i < data.getNumVertices(); i += faceSize) {
+			std::size_t indices[] = { i, i + 1, i + 2 };
+			if (useBinary) {
+				os.write((char*)&faceSize, sizeof(unsigned char));
+				for (std::size_t j = 0; j < faceSize; j++) {
+					os.write((char*)&indices[j], sizeof(std::size_t));
 				}
-			} else {
+			}
+			else {
 				os << (std::size_t) faceSize << " " << indices[0] << " " << indices[1] << " " << indices[2] << endl;
 			}
+		}
+	}
+
+	//TODO: add index generation for other OF_PRIMITIVE cases
+}
+
+void ofMesh::saveOBJ(string path) const {
+	ofFile os(path, ofFile::WriteOnly);
+	const ofMesh& data = *this;
+
+	bool doColor = data.getNumColors() > 0;
+	for (std::size_t i = 0; i < data.getNumVertices(); i++) {
+		ofVec3f &v = data.getVertex(i);
+		os << "v " << v.x << " " << v.y << " " << v.z;
+
+		if (doColor) {
+			ofColor cur = data.getColor(i);
+			os << " " << cur.r / 255.0 << " " << cur.g / 255.0 << " " << cur.b / 255.0;
+		}
+		os << endl;
+	}
+	for (std::size_t i = 0; i < data.getNumNormals(); i++) {
+		ofVec3f &v = data.getNormal(i);
+		os << "vn " << v.x << " " << v.y << " " << v.z << endl;
+	}
+
+	for (std::size_t i = 0; i < data.getNumTexCoords(); i++) {
+		ofVec2f &v = data.getTexCoord(i);
+		os << "vt " << v.x << " " << v.y << endl;
+	}
+
+	int faceSize = 3;
+	if (data.getNumIndices()) {
+		for (std::size_t i = 0; i < data.getNumIndices(); i += faceSize) {
+
+			os << "f " << data.getIndex(i) + 1 << " " << data.getIndex(i + 1) + 1 << " " << data.getIndex(i + 2) + 1 << endl;
+		}
+	}
+	else if (data.getMode() == OF_PRIMITIVE_TRIANGLES) {
+		for (std::size_t i = 0; i < data.getNumVertices(); i += faceSize) {
+			os << "f " << i + 1 << " " << i + 2 << " " << i + 3 << endl;
+		}
+	}
+	//TODO: add index generation for other OF_PRIMITIVE cases
+}
+
+void ofMesh::saveSTL(string path) const {
+	ofFile os(path, ofFile::WriteOnly);
+	const ofMesh& data = *this;
+	//header
+	unsigned int numTris;
+	//no color support
+	os.write("Openframeworks STL by Nervous System http://openframeworks.cc http://nervo.us   ", 80);
+	if (data.getNumIndices()) {
+		numTris = data.getNumIndices() / 3;
+	}
+	else {
+		numTris = data.getNumVertices() / 3;
+	}
+
+	os.write((char *)&numTris, sizeof(unsigned int));
+	ofVec3f v;
+
+	//end header
+	if (data.getNumIndices()) {
+		for (std::size_t i = 0; i < data.getNumIndices(); i += 3) {
+			//normal
+			os.write((char *)&v, sizeof(ofVec3f));
+			v = data.getVertex(data.getIndex(i));
+			os.write((char *)&v, sizeof(ofVec3f));
+			v = data.getVertex(data.getIndex(i + 1));
+			os.write((char *)&v, sizeof(ofVec3f));
+			v = data.getVertex(data.getIndex(i + 2));
+			os.write((char *)&v, sizeof(ofVec3f));
+			//end triangle could be used to encode color
+			os.write("  ", 2);
+		}
+	}
+	else if (data.getMode() == OF_PRIMITIVE_TRIANGLES) {
+		for (std::size_t i = 0; i < data.getNumVertices(); i += 3) {
+			os.write((char *)&v, sizeof(ofVec3f));
+			v = data.getVertex(i);
+			os.write((char *)&v, sizeof(ofVec3f));
+			v = data.getVertex(i + 1);
+			os.write((char *)&v, sizeof(ofVec3f));
+			v = data.getVertex(i + 2);
+			os.write((char *)&v, sizeof(ofVec3f));
+			//end triangle could be used to encode color
+			os.write("  ", 2);
 		}
 	}
 

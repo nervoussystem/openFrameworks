@@ -604,6 +604,28 @@ public:
 	/// It will only load meshes saved in the PLY ASCII format; the binary format is not supported.
 	void load(string path);
 
+	/// \brief Loads a mesh from a file located at the provided path into the mesh.
+	/// This will replace any existing data within the mesh.
+	///
+	/// It expects that the file will be in the [PLY Format](http://en.wikipedia.org/wiki/PLY_(file_format)).
+	/// It will only load meshes saved in the PLY ASCII format; the binary format is not supported.
+	void loadPLY(string path);
+	void loadPLYBinary(ofFile & is, bool littleEndian);
+
+	/// \brief Loads a mesh from a file located at the provided path into the mesh.
+	/// This will replace any existing data within the mesh.
+	///
+	/// It expects that the file will be in the [STL Format](https://en.wikipedia.org/wiki/STL_(file_format)).
+	/// It will only load meshes saved in the STL Binary format; the ascii format is not supported.
+	void loadSTL(string path);
+
+	/// \brief Loads a mesh from a file located at the provided path into the mesh.
+	/// This will replace any existing data within the mesh.
+	///
+	/// It expects that the file will be in the [OBJ Format](https://en.wikipedia.org/wiki/STL_(file_format)).
+	/// It will only load meshes saved in the OBJ format;
+	void loadOBJ(string path);
+
 	///  \brief Saves the mesh at the passed path in the [PLY Format](http://en.wikipedia.org/wiki/PLY_(file_format)).
 	///
 	///  There are two format options for PLY: a binary format and an ASCII format.
@@ -614,7 +636,9 @@ public:
 	///
 	///  For more information, see the [PLY format specification](http://paulbourke.net/dataformats/ply/).
 	void save(string path, bool useBinary = false) const;
-	
+	void savePLY(string path, bool useBinary = false) const;
+	void saveOBJ(string path) const;
+	void saveSTL(string path) const;
 	/// \}
 
 private:
