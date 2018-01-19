@@ -370,7 +370,6 @@ public:
 
 	/// \}
 	
-private:
 
 	ofPolyline & lastPolyline();
 	void addCommand(const Command & command);

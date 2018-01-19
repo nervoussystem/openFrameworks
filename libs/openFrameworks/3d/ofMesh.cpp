@@ -771,6 +771,38 @@ void ofMesh::append(const ofMesh & mesh){
 }
 
 
+/*
+getline replacement for files with \r \r\n or \n line endings
+found meshes with all three
+*/
+static std::istream& safeGetline(std::istream& is, std::string& t)
+{
+	t.clear();
+
+	std::istream::sentry se(is, true);
+	std::streambuf* sb = is.rdbuf();
+
+	for (;;) {
+		int c = sb->sbumpc();
+		switch (c) {
+		case '\n':
+			return is;
+		case '\r':
+			if (sb->sgetc() == '\n')
+				sb->sbumpc();
+			return is;
+		case EOF:
+			// Also handle the case when the last line has no line ending
+			if (t.empty())
+				is.setstate(std::ios::eofbit);
+			return is;
+		default:
+			t += (char)c;
+		}
+	}
+}
+
+
 //--------------------------------------------------------------
 void ofMesh::load(string path) {
 	string filetype = path.substr(path.size() - 3);
@@ -1641,8 +1673,8 @@ void ofMesh::savePLY(string path, bool useBinary) const {
 			if (useBinary) {
 				os.write((char*)&faceSize, sizeof(unsigned char));
 				for (std::size_t j = 0; j < faceSize; j++) {
-					std::size_t curIndex = data.getIndex(i + j);
-					os.write((char*)&curIndex, sizeof(std::size_t));
+					int curIndex = data.getIndex(i + j);
+					os.write((char*)&curIndex, sizeof(int));
 				}
 			}
 			else {
@@ -2071,104 +2103,36 @@ void ofMesh::setFromTriangles( const vector<ofMeshFace>& tris, bool bUseFaceNorm
 }
 
 //----------------------------------------------------------
-void ofMesh::smoothNormals( float angle ) {
+void ofMesh::smoothNormals(float angle) {
+	enableNormals();
+	normals.clear();
+	normals.resize(vertices.size(), ofVec3f());
 
-	if( getMode() == OF_PRIMITIVE_TRIANGLES) {
-		vector<ofMeshFace> triangles = getUniqueFaces();
-		vector<ofVec3f> verts;
-		for(ofIndexType i = 0; i < triangles.size(); i++) {
-			for(ofIndexType j = 0; j < 3; j++) {
-				verts.push_back( triangles[i].getVertex(j) );
-			}
-		}
+	ofVec3f U, V, p1, p2, p3;
+	ofIndexType i1, i2, i3;
+	for (int i = 0; i < indices.size();) {
+		i1 = indices[i++];
+		i2 = indices[i++];
+		i3 = indices[i++];
+		p1 = vertices[i1];
+		p2 = vertices[i2];
+		p3 = vertices[i3];
 
-		map<int, int> removeIds;
-
-		float epsilon = .01f;
-		for(ofIndexType i = 0; i < verts.size()-1; i++) {
-			for(ofIndexType j = i+1; j < verts.size(); j++) {
-				if(i != j) {
-					ofVec3f& v1 = verts[i];
-					ofVec3f& v2 = verts[j];
-					if( v1.distance(v2) <= epsilon ) {
-						// average the location //
-						verts[i] = (v1+v2)/2.f;
-						verts[j] = verts[i];
-						removeIds[j] = 1;
-					}
-				}
-			}
-		}
-
-		// string of vertex in 3d space to triangle index //
-		map<string, vector<int> > vertHash;
-
-		//ofLogNotice("ofMesh") << "smoothNormals(): num verts = " << verts.size() << " tris size = " << triangles.size();
-
-		string xStr, yStr, zStr;
-
-		for(ofIndexType i = 0; i < verts.size(); i++ ) {
-			xStr = "x"+ofToString(verts[i].x==-0?0:verts[i].x);
-			yStr = "y"+ofToString(verts[i].y==-0?0:verts[i].y);
-			zStr = "z"+ofToString(verts[i].z==-0?0:verts[i].z);
-			string vstring = xStr+yStr+zStr;
-			if(vertHash.find(vstring) == vertHash.end()) {
-				for(ofIndexType j = 0; j < triangles.size(); j++) {
-					for(ofIndexType k = 0; k < 3; k++) {
-						if(verts[i].x == triangles[j].getVertex(k).x) {
-							if(verts[i].y == triangles[j].getVertex(k).y) {
-								if(verts[i].z == triangles[j].getVertex(k).z) {
-									vertHash[vstring].push_back( j );
-								}
-							}
-						}
-					}
-				}
-			}
-		}
-
-//		for( map<string, vector<int> >::iterator it = vertHash.begin(); it != vertHash.end(); ++it) {
-//			//for( map<string, int >::iterator it = vertHash.begin(); it != vertHash.end(); ++it) {
-//			ofLogNotice("ofMesh") << "smoothNormals(): " << it->first << "  num = " << it->second.size();
-//		}
-
-		ofVec3f normal;
-		float angleCos = cos(angle * DEG_TO_RAD );
-		float numNormals=0;
-		ofVec3f f1, f2;
-		ofVec3f vert;
-
-		for(ofIndexType j = 0; j < triangles.size(); j++) {
-			for(ofIndexType k = 0; k < 3; k++) {
-				vert = triangles[j].getVertex(k);
-				xStr = "x"+ofToString(vert.x==-0?0:vert.x);
-				yStr = "y"+ofToString(vert.y==-0?0:vert.y);
-				zStr = "z"+ofToString(vert.z==-0?0:vert.z);
-
-				string vstring = xStr+yStr+zStr;
-				numNormals=0;
-				normal.set(0,0,0);
-				if(vertHash.find(vstring) != vertHash.end()) {
-					for(ofIndexType i = 0; i < vertHash[vstring].size(); i++) {
-						f1 = triangles[j].getFaceNormal();
-						f2 = triangles[vertHash[vstring][i]].getFaceNormal();
-						if(f1.dot(f2) >= angleCos ) {
-							normal += f2;
-							numNormals+=1.f;
-						}
-					}
-					//normal /= (float)vertHash[vstring].size();
-					normal /= numNormals;
-
-					triangles[j].setNormal(k, normal);
-				}
-			}
-		}
-
-		//ofLogNotice("ofMesh") << "smoothNormals(): setting from triangles ";
-		setFromTriangles( triangles );
-
+		V = p2 - p1;
+		U = p3 - p1;
+		U.cross(V);
+		normals[i1] += U;
+		normals[i2] += U;
+		normals[i3] += U;
 	}
+	for (int i = 0; i < normals.size(); ++i) {
+		normals[i].normalize();
+		if (angle) {
+			normals[i] *= -1;
+		}
+	}
+
+	bNormalsChanged = true;
 }
 
 // PLANE MESH //

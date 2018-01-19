@@ -642,7 +642,24 @@ public:
 	/// \}
 
 private:
-
+	enum PropertyType {
+		CHAR,
+		UCHAR,
+		SHORT,
+		USHORT,
+		INT,
+		UINT,
+		FLOAT,
+		DOUBLE,
+		LCHAR,
+		LUCHAR,
+		LSHORT,
+		LUSHORT,
+		LINT,
+		LUINT,
+		LFLOAT,
+		LDOUBLE
+	};
 	vector<ofVec3f> vertices;
 	vector<ofFloatColor> colors;
 	vector<ofVec3f> normals;
@@ -653,6 +670,11 @@ private:
 	// mutable allows to change them from const methods
 	mutable vector<ofMeshFace> faces;
 	mutable bool bFacesDirty;
+
+	template<typename T>
+	void readPLYProperty(ofFile & is, PropertyType type, T & out);
+	template<typename T>
+	void readPLYListProperty(ofFile & is, PropertyType type, T & out);
 
 	bool bVertsChanged, bColorsChanged, bNormalsChanged, bTexCoordsChanged, 
 		bIndicesChanged;
